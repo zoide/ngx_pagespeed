@@ -1185,16 +1185,18 @@ http {
     listen [::]:@@PRIMARY_PORT@@;
     server_name  localhost;
     pagespeed FileCachePath "@@FILE_CACHE@@";
-
+      more_set_headers 'Server: ws';
+      more_set_headers 'Fooh: bah';
+      more_set_headers -s '404' 'ZZZ: 404Waaah';
     location ~ ^/pagespeed_admin {
       allow 127.0.0.1;
       allow ::1;
       deny all;
     }
 
-    location ~ "\.pagespeed\.([a-z]\.)?[a-z]{2}\.[^.]{10}\.[^.]+" {
-      add_header "" "";
-    }
+    #location ~ "\.pagespeed\.([a-z]\.)?[a-z]{2}\.[^.]{10}\.[^.]+" {
+    #  add_header "" "";
+    #}
 
     # Backend for ipro-proxy.example.com
     location /mod_pagespeed_test/ipro/mod_deflate/ {

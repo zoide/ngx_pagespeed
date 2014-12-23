@@ -45,9 +45,11 @@ NgxBaseFetch::NgxBaseFetch(ngx_http_request_t* r,
       done_called_(false),
       last_buf_sent_(false),
       references_(2),
-      ipro_lookup_(false),
+      base_fetch_type_(kUnknown),
       preserve_caching_headers_(preserve_caching_headers),
-      detached_(false) {
+      detached_(false),
+      suppress_(false) {
+  // TODO(oschaaf): do we really need a mutex for each NgxBaseFetch instance?
   if (pthread_mutex_init(&mutex_, NULL)) CHECK(0);
 }
 
@@ -68,16 +70,36 @@ void NgxBaseFetch::Terminate() {
   }
 }
 
+const char* BaseFetchTypeToCStr(NgxBaseFetchType type) {
+  switch(type) {
+    case kPageSpeedResource:
+      return "ps resource";
+    case kHtmlTransform:
+      return "html transform";
+    case kAdminPage:
+      return "admin page";
+    case kIproLookup:
+      return "ipro lookup";
+    case kUnknown:
+      return "unknown";
+  }
+  CHECK(false);
+  return "can't get here";
+}
+
 void NgxBaseFetch::ReadCallback(const ps_event_data& data) {
   NgxBaseFetch* base_fetch = reinterpret_cast<NgxBaseFetch*>(data.sender);
   ngx_http_request_t* r = base_fetch->request();
   bool detached = base_fetch->detached();
+  const char* type = BaseFetchTypeToCStr(base_fetch->base_fetch_type());
+
+  CHECK(base_fetch->base_fetch_type() != kUnknown) << "ReadCallback called for unknown base fetch type";
   int refcount = base_fetch->DecrementRefCount();
 
   #if (NGX_DEBUG)
   ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0,
-     "pagespeed [%p] event: %c. bf:%p - refcnt:%d - det: %c", r,
-     data.type, base_fetch, refcount, detached ? 'Y': 'N');
+     "pagespeed [%p] event: %c. bf:%p(%s) - refcnt:%d - det: %c", r,
+      data.type, base_fetch, type, refcount, detached ? 'Y': 'N');
   #endif
 
   // If we ended up destructing the base fetch, or the request context is
@@ -85,20 +107,17 @@ void NgxBaseFetch::ReadCallback(const ps_event_data& data) {
   if (refcount == 0 || detached) {
     return;
   }
+  
   ps_request_ctx_t* ctx = ps_get_request_context(r);
-  CHECK(data.sender == ctx->base_fetch);
-
-  // ngx_base_fetch_handler() ends up setting ctx->fetch_done, which
-  // means we shouldn't call it anymore.
-  if (ctx->fetch_done) {
-    return;
-  }
+  CHECK(data.sender == ctx->base_fetch)
+      << "data.sender: " << data.sender << ", ctx->base_fetch: " << ctx->base_fetch;
 
   CHECK(r->count > 0) << "r->count: " << r->count;
 
   // If we are unlucky enough to have our connection finalized mid-ipro-lookup,
   // we must enter a different flow. Also see ps_in_place_check_header_filter().
-  if (!ctx->base_fetch->ipro_lookup_ && r->connection->error) {
+  if ((ctx->base_fetch->base_fetch_type_ != kIproLookup)
+      && r->connection->error) {
     ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, 0,
       "pagespeed [%p] request already finalized", r);
     ngx_http_finalize_request(r, NGX_ERROR);
@@ -112,7 +131,11 @@ void NgxBaseFetch::ReadCallback(const ps_event_data& data) {
                 "pagespeed [%p] ps_base_fetch_handler() returned %d for %c",
                 r, rc, data.type);
 #endif
+  ngx_connection_t* c = r->connection;
   ngx_http_finalize_request(r, rc);
+  // We need to run posted requests, See:
+  // https://www.ruby-forum.com/topic/5564332
+  ngx_http_run_posted_requests(c);
 }
 
 void NgxBaseFetch::Lock() {
@@ -135,7 +158,6 @@ bool NgxBaseFetch::HandleWrite(const StringPiece& sp,
 ngx_int_t NgxBaseFetch::CopyBufferToNginx(ngx_chain_t** link_ptr) {
   CHECK(!(done_called_ && last_buf_sent_))
         << "CopyBufferToNginx() was called after the last buffer was sent";
-
   // there is no buffer to send
   if (!done_called_ && buffer_.empty()) {
     *link_ptr = NULL;
@@ -188,6 +210,9 @@ void NgxBaseFetch::RequestCollection(char type) {
   // there's a small chance that between writing and adding to the refcount
   // both pagespeed and nginx will release their refcount -- destructing
   // this NgxBaseFetch instance.
+  if (suppress_) {
+    return;
+  }
   IncrementRefCount();
   if (!event_connection->WriteEvent(type, this)) {
     DecrementRefCount();
@@ -198,19 +223,22 @@ void NgxBaseFetch::HandleHeadersComplete() {
   int status_code = response_headers()->status_code();
   bool status_ok = (status_code != 0) && (status_code < 400);
 
-  if (!ipro_lookup_ || status_ok) {
+  if ((base_fetch_type_ != kIproLookup) || status_ok) {
     // If this is a 404 response we need to count it in the stats.
     if (response_headers()->status_code() == HttpStatus::kNotFound) {
       server_context_->rewrite_stats()->resource_404_count()->Add(1);
     }
   }
 
+  RequestCollection(kHeadersComplete);  // Headers available.
+
   // For the IPRO lookup, supress notification of the nginx side here.
-  // If we send both this event and the one from done, nasty stuff will happen
-  // if we loose the race with with the nginx side destructing this base fetch
-  // instance (and thereby clearing the byte and its pending extraneous event).
-  if (!ipro_lookup_) {
-    RequestCollection(kHeadersComplete);  // Headers available.
+  // If we send both the headerscomplete event and the one from done, nasty
+  // stuff will happen if we loose the race with with the nginx side destructing
+  // this base fetch instance.
+  // TODO(oschaaf): doc, and check
+  if ((base_fetch_type_ == kIproLookup) && !status_ok) {
+    suppress_ = true;
   }
 }
 
@@ -243,6 +271,7 @@ void NgxBaseFetch::HandleDone(bool success) {
   Lock();
   done_called_ = true;
   Unlock();
+
   RequestCollection(kDone);
   DecrefAndDeleteIfUnreferenced();
 }

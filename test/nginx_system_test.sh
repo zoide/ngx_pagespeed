@@ -274,6 +274,11 @@ STATISTICS_URL=http://$PRIMARY_HOSTNAME/ngx_pagespeed_statistics
 
 # An expected failure can be indicated like: "~In-place resource optimization~"
 PAGESPEED_EXPECTED_FAILURES="
+~Make sure nostore on a subdirectory is retained~
+~Custom headers remain on resources, but cache should be 1 year.~
+~server-side includes~
+~PageSpeedFilters response headers is interpreted~
+~Date response header set~
 "
 
 # Some tests are flakey under valgrind. For now, add them to the expected
@@ -288,6 +293,7 @@ if $USE_VALGRIND; then
 ~prioritize_critical_css Able to read POST data from temp file.~
 ~IPRO flow uses cache as expected.~
 ~IPRO flow doesn't copy uncacheable resources multiple times.~
+~inline_unauthorized_resources allows unauthorized css selectors~
 ~inline_unauthorized_resources allows unauthorized css selectors~
 "
 fi

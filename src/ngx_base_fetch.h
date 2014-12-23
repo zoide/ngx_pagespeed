@@ -64,6 +64,13 @@ extern "C" {
 
 namespace net_instaweb {
 
+enum NgxBaseFetchType {
+  kUnknown,
+  kIproLookup,
+  kHtmlTransform,
+  kPageSpeedResource,
+  kAdminPage
+};
 
 class NgxBaseFetch : public AsyncFetch {
  public:
@@ -100,8 +107,9 @@ class NgxBaseFetch : public AsyncFetch {
   // Called by pagespeed to increment the refcount.
   int IncrementRefCount();
 
-  void set_ipro_lookup(bool x) { ipro_lookup_ = x; }
-
+  void set_base_fetch_type(NgxBaseFetchType x) { base_fetch_type_ = x; }
+  NgxBaseFetchType base_fetch_type() { return base_fetch_type_; }
+  
   // Detach() is called when the nginx side releases this base fetch. It
   // sets detached_ to true and decrements the refcount. We need to know
   // this to be able to handle events which nginx request context has been
@@ -151,10 +159,11 @@ class NgxBaseFetch : public AsyncFetch {
   // decremented on the nginx side for each event read for it.
   int references_;
   pthread_mutex_t mutex_;
-  bool ipro_lookup_;
+  NgxBaseFetchType base_fetch_type_;
   PreserveCachingHeaders preserve_caching_headers_;
   // Set to true just before the nginx side releases its reference
   bool detached_;
+  bool suppress_;
 
   DISALLOW_COPY_AND_ASSIGN(NgxBaseFetch);
 };
