@@ -40,7 +40,7 @@ fi
 MOD_PAGESPEED_SRC="$1"
 
 if [ "$(basename "$(dirname "$MOD_PAGESPEED_SRC")")/$( \
-        basename "$MOD_PAGESPEED_SRC")" != "mod_pagespeed/src" ] ; then
+        basename "$MOD_PAGESPEED_SRC")" != "ngx_pagespeed/src" ] ; then
   echo "Usage: $(basename $0) /path/to/mod_pagespeed/src"
   exit 1
 fi
